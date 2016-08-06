@@ -6,7 +6,7 @@ find_package(Threads REQUIRED)
 include_directories(${GTEST_INCLUDE_DIRS})
 include_directories(.)
 
-add_executable(runUnitTests test/basic.cpp test/index.cpp)
+add_executable(runUnitTests test/basic.cpp test/index.cpp test/threads.cpp)
 target_compile_features(runUnitTests PRIVATE cxx_range_for)
 target_link_libraries(runUnitTests gtest gtest_main pthread)
 add_test(NAME that-test-I-made COMMAND runUnitTests)
