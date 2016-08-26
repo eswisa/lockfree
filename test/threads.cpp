@@ -8,7 +8,7 @@
 class ThreadSafetyTests : public ::testing::Test {
 public:
   ThreadSafetyTests() {
-    m = new LockfreeMap(size);
+    m = new LockFreeMap<int, int>(size);
   }
 
   ~ThreadSafetyTests() {
@@ -16,11 +16,11 @@ public:
   }
 
 protected:
-  LockfreeMap* m;
+  LockFreeMap<int, int>* m;
   int size = 32000;
 };
 
-void insertingThread(int number, LockfreeMap* m, std::atomic<int>* successfulInsertions) {
+void insertingThread(int number, LockFreeMap<int, int>* m, std::atomic<int>* successfulInsertions) {
   auto successes = 0;
   auto base = number * number * 100000;
   for (int i = 1; i < 33000; ++i) {
@@ -51,7 +51,7 @@ TEST_F(ThreadSafetyTests, count_number_of_succesful_insertions_keys_dont_collide
 }
 
 template <int N = 32000>
-void randomActionsThread(int number, LockfreeMap* m, std::atomic<int>* successfulInsertions, std::atomic<int>* successfulRemovals) {
+void randomActionsThread(int number, LockFreeMap<int, int>* m, std::atomic<int>* successfulInsertions, std::atomic<int>* successfulRemovals) {
   auto localSuccessfulInsertions = 0;
   auto localSuccessfulRemovals = 0;
 

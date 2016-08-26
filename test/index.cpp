@@ -4,7 +4,7 @@
 class IndexTests : public ::testing::Test {
 public:
   IndexTests() {
-    m = new LockfreeMap(8);
+    m = new LockFreeMap<int, int>(8);
   }
 
   ~IndexTests() {
@@ -12,7 +12,7 @@ public:
   }
 
 protected:
-  LockfreeMap* m;
+  LockFreeMap<int, int>* m;
 };
 
 TEST_F(IndexTests,Insert_and_get_indices_greater_than_size) {
