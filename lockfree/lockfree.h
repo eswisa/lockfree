@@ -41,7 +41,7 @@ public:
   }
 
   ValueType insert(KeyType k, ValueType v) {
-    auto table = m_activeTable;
+    Table* table = m_activeTable.load();
 
     {
       ChangingThread threadRegister(table);
@@ -63,7 +63,8 @@ public:
   }
 
   ValueType get(KeyType k) {
-    auto cell = m_activeTable->findFirstCellFor(k);
+    Table* activeTable = m_activeTable.load();
+    auto cell = activeTable->findFirstCellFor(k);
 
     auto mostRecentValue = cell == nullptr ? ValueTraitsType::defaultValue() : cell->value.load(std::memory_order::memory_order_relaxed);
 
@@ -71,13 +72,14 @@ public:
       return mostRecentValue;
     }
 
-    auto oldCell = m_activeTable->findFirstCellFor(k);
+    Table* backgroundTable = m_backgroundTable.load();
+    auto oldCell = backgroundTable->findFirstCellFor(k);
 
     return (oldCell == nullptr) ? ValueTraitsType::defaultValue() : cell->value.load(std::memory_order::memory_order_relaxed);
   }
 
   ValueType remove(KeyType k) {
-    auto table = m_activeTable;
+    Table* table = m_activeTable;
     ChangingThread threadRegister(table);
 
     auto cell = table->findFirstCellFor(k);
@@ -144,6 +146,8 @@ private:
     }
 
     int importFrom(Table* oldTable) {
+      ChangingThread(this);
+
       auto transferredEntries = 0;
       for (auto i = 0; i < oldTable->m_size; ++i) {
         auto key = oldTable->m_data[i].key.load(std::memory_order::memory_order_relaxed);
@@ -194,33 +198,37 @@ private:
   double m_maxLoadFactor;
   double m_growthFactor;
 
-  Table* m_activeTable;
-  Table* m_backgroundTable;
+  std::atomic<Table*> m_activeTable;
+  std::atomic<Table*> m_backgroundTable;
 
   // migration
   std::atomic<bool> m_isMigrating;
 
   void migrate() {
-    auto currentTable = m_activeTable;
+    Table* currentTable = m_activeTable;
 
     auto baseNumCells = std::max(currentTable->m_size, currentTable->m_heldKeys + currentTable->m_changingThreads);
-    auto newSize = static_cast<int>(baseNumCells * m_growthFactor);
+    auto newSize = static_cast<int>(baseNumCells * m_growthFactor * m_maxLoadFactor);
 
-    auto newTable = new Table(newSize, newSize * m_maxLoadFactor);
+    printf("+mig from %d to %d\n", currentTable->m_size, newSize);
+
+    auto newTable = new Table(newSize, newSize);
 
     // make it the active one
     m_backgroundTable = currentTable;
     m_activeTable = newTable;
 
-    m_isMigrating = true;
-
     currentTable->waitForThreadsToLeave();
+
+    m_isMigrating = true;
 
     newTable->importFrom(currentTable);
 
     m_isMigrating = false;
 
-    delete m_backgroundTable;
+    // delete m_backgroundTable;
+
+    printf("-mig\n");
   }
 
 };

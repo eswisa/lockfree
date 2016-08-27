@@ -3,6 +3,8 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include <mutex>
+#include <vector>
 #include <stdlib.h>
 
 class ThreadSafetyTests : public ::testing::Test {
@@ -19,6 +21,88 @@ protected:
   LockFreeMap<int, int>* m;
   int size = 32000;
 };
+
+class SafeQueue {
+
+  std::vector<std::pair<std::string, bool>> q;
+  std::mutex m;
+
+public:
+  void insert(std::string message, bool valid) {
+    std::lock_guard<std::mutex> lg(m);
+    q.push_back(std::make_pair(message, valid));
+  }
+
+  std::vector<std::pair<std::string, bool>>& queue() { return q; }
+};
+
+struct TestData {
+  std::function<void(int, LockFreeMap<int, int>*, SafeQueue*)> threadFunc;
+  std::string funcDescription;
+  int numOfThreads;
+};
+
+::std::ostream& operator<<(::std::ostream& os, const TestData& testData) {
+  return os << "(" << testData.funcDescription << ", " << testData.numOfThreads << " threads)";
+}
+
+class ThreadSafetyTestsP : public ::testing::TestWithParam<TestData> {};
+
+void dummyThread(int id, LockFreeMap<int, int>* m, SafeQueue* messages) {
+  m->insert(id, id*10);
+
+  std::stringstream strm;
+  strm << "thread " << id << " finished it's work";
+  //messages->insert(strm.str(), id!=7);
+}
+
+void insertDistinct(int id, LockFreeMap<int, int>* m, SafeQueue* messages) {
+  auto successes = 0;
+  auto base = id * id * 100000;
+  for (int i = 1; i <= 33000; ++i) {
+    if (m -> insert(base + i, i) != 0) {
+      ++successes;
+    }
+    else {
+      printf("id(%d) insert(%d, %d) failed\n", id, base+i, i);
+    }
+  }
+
+  if (successes != 33000) {
+    std::stringstream strm;
+    strm << "thread " << id << " failed to complete all insertions (" << successes << "/33000)";
+    messages->insert(strm.str(), false);
+  }
+}
+
+INSTANTIATE_TEST_CASE_P(ThreadSafetyTestsInstantiation, ThreadSafetyTestsP, ::testing::Values(TestData{dummyThread, "dummy", 100},TestData{insertDistinct, "inserting", 10}));
+
+TEST_P(ThreadSafetyTestsP, simpleTest) {
+  auto p = GetParam();
+
+  std::thread** threads = new std::thread*[p.numOfThreads];
+  LockFreeMap<int, int> m;
+  SafeQueue messages;
+
+  for (auto i = 0; i < p.numOfThreads; ++i)
+  {
+    threads[i] = new std::thread(p.threadFunc, i, &m, &messages);
+  }
+
+  for (auto i = 0; i < p.numOfThreads; ++i)
+  {
+    threads[i]->join();
+    delete threads[i];
+  }
+
+  for (auto &p : messages.queue()) {
+    ASSERT_TRUE(p.second) << p.first.c_str();
+  }
+
+  delete[] threads;
+}
+
+
 
 void insertingThread(int number, LockFreeMap<int, int>* m, std::atomic<int>* successfulInsertions) {
   auto successes = 0;
