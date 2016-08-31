@@ -102,8 +102,6 @@ TEST_P(ThreadSafetyTestsP, simpleTest) {
   delete[] threads;
 }
 
-
-
 void insertingThread(int number, LockFreeMap<int, int>* m, std::atomic<int>* successfulInsertions) {
   auto successes = 0;
   auto base = number * number * 100000;
@@ -118,7 +116,7 @@ void insertingThread(int number, LockFreeMap<int, int>* m, std::atomic<int>* suc
   std::atomic_fetch_add(successfulInsertions, successes);
 }
 
-TEST_F(ThreadSafetyTests, count_number_of_succesful_insertions_keys_dont_collide_and_map_doesnt_grow) {
+TEST_F(ThreadSafetyTests, DISABLED_count_number_of_succesful_insertions_keys_dont_collide_and_map_doesnt_grow) {
   std::atomic<int> successfulInsertions;
 
   std::atomic_init(&successfulInsertions, 0);
@@ -164,7 +162,7 @@ void randomActionsThread(int number, LockFreeMap<int, int>* m, std::atomic<int>*
   std::atomic_fetch_add(successfulRemovals, localSuccessfulRemovals);
 }
 
-TEST_F(ThreadSafetyTests, random_actions_when_map_doesnt_grow) {
+TEST_F(ThreadSafetyTests, DISABLED_random_actions_when_map_doesnt_grow) {
   std::atomic<int> successfulInsertions, successfulRemovals;
   std::atomic_init(&successfulInsertions, 0);
   std::atomic_init(&successfulRemovals, 0);

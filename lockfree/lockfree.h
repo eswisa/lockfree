@@ -36,28 +36,31 @@ public:
   LockFreeMap(): LockFreeMap(1000) {}
   ~LockFreeMap() {}
 
-  LockFreeMap(int initialSize, double maxLoadFactor = 0.5, double growthFactor = 4.0): m_maxLoadFactor(maxLoadFactor), m_growthFactor(growthFactor), m_isMigrating(false) {
+  LockFreeMap(int initialSize, double maxLoadFactor = 0.5, double growthFactor = 4.0): m_maxLoadFactor(maxLoadFactor), m_growthFactor(growthFactor) {
     m_activeTable = new Table(initialSize, initialSize * maxLoadFactor);
   }
 
   ValueType insert(KeyType k, ValueType v) {
     Table* table = m_activeTable.load();
 
-    {
-      ChangingThread threadRegister(table);
-
-      auto cell = table->fillFirstCellFor(k);
-      if (cell == nullptr) {
-        return ValueTraitsType::defaultValue();
-      }
-
-      cell->value.store(v, std::memory_order::memory_order_release);
-    }
+    auto valueInserted = insertWithoutAllocate(table, k, v);
+    if (valueInserted == ValueTraitsType::defaultValue()) return valueInserted;
 
     ++table->m_heldKeys;
     if (--table->m_freeCells == 0) {
-      migrate();
+      activateNewTable();
     }
+    else if (!m_oldTables.empty() && m_oldTables.startMigrationTransaction()) {
+      AutoCloseMigration endMigration(&m_oldTables);
+
+      auto oldTable = m_oldTables.peekOldest();
+      if (migrateFirstElements(oldTable, table, 0)) {
+        m_oldTables.discardOldest();
+        delete oldTable;
+      }
+    }
+
+
 
     return v;
   }
@@ -66,21 +69,19 @@ public:
     Table* activeTable = m_activeTable.load();
     auto cell = activeTable->findFirstCellFor(k);
 
-    auto mostRecentValue = cell == nullptr ? ValueTraitsType::defaultValue() : cell->value.load(std::memory_order::memory_order_relaxed);
-
-    if (cell != nullptr || !m_isMigrating.load()) {
-      return mostRecentValue;
+    if (cell != nullptr) {
+      return cell->value.load(std::memory_order::memory_order_relaxed);
     }
 
-    Table* backgroundTable = m_backgroundTable.load();
-    auto oldCell = backgroundTable->findFirstCellFor(k);
+    auto v = m_oldTables.getValueHistorically(k);
+    if (ValueTraitsType::defaultValue() != insertWithoutAllocate(activeTable, k, v))
+      m_oldTables.removeValueHistorically(k);
 
-    return (oldCell == nullptr) ? ValueTraitsType::defaultValue() : cell->value.load(std::memory_order::memory_order_relaxed);
+    return v;
   }
 
   ValueType remove(KeyType k) {
     Table* table = m_activeTable;
-    ChangingThread threadRegister(table);
 
     auto cell = table->findFirstCellFor(k);
 
@@ -104,7 +105,7 @@ private:
   };
 
   struct Table {
-    Table(int size, int freeCells): m_size(size), m_freeCells(freeCells), m_changingThreads(0), m_heldKeys(0){
+    Table(int size, int freeCells): m_size(size), m_freeCells(freeCells), m_heldKeys(0){
       m_data = new Element[size];
       for (int i = 0; i < size; ++i) {
         m_data[i].value = ValueTraitsType::defaultValue();
@@ -145,90 +146,150 @@ private:
       return nullptr;
     }
 
-    int importFrom(Table* oldTable) {
-      ChangingThread(this);
-
-      auto transferredEntries = 0;
-      for (auto i = 0; i < oldTable->m_size; ++i) {
-        auto key = oldTable->m_data[i].key.load(std::memory_order::memory_order_relaxed);
-        auto value = oldTable->m_data[i].value.load(std::memory_order::memory_order_relaxed);
-
-        // if the key is default, the cell is uninitialized
-        // if the value is default, the key was deleted
-        if (key == KeyTraitsType::defaultValue() || value == ValueTraitsType::defaultValue()) {
-          continue;
-        }
-
-        auto newCell = fillFirstCellFor(key);
-
-        // override the new cell only if it's empty. if it's not, we might undo an update.
-        auto expected = ValueTraitsType::defaultValue();
-        transferredEntries += (newCell->value.compare_exchange_strong(expected, value)) ? 1 : 0;
-      }
-
-      return transferredEntries;
-    }
-
-    void waitForThreadsToLeave() {
-      int expected = 0;
-      while (!m_changingThreads.compare_exchange_weak(expected, 0)) {}
-    }
-
     int m_size;
     std::atomic<int> m_freeCells;
     std::atomic<int> m_heldKeys;
-    std::atomic<int> m_changingThreads;
     Element* m_data;
   };
 
-  class ChangingThread {
-  public:
-    ChangingThread(Table* table) : m_table(table) {
-      ++m_table->m_changingThreads;
+  struct OldTablesContainer {
+    OldTablesContainer(int size = 100) : m_size(size), m_totalTables(0), m_head(0), m_tail(0), m_isMigrating(false) {
+      m_data = new Table*[m_size];
     }
 
-    ~ChangingThread() {
-      --m_table->m_changingThreads;
+    bool empty() {
+      return m_totalTables == 0;
+    }
+
+    bool full() {
+      return m_totalTables == m_size;
+    }
+
+    bool insert(Table* t){
+      while (!full()) {
+        auto currTail = m_tail.load(std::memory_order::memory_order_relaxed);
+        auto newTail = (currTail + 1) % m_size;
+        if (m_tail.compare_exchange_strong(currTail, newTail)) {
+          ++m_totalTables;
+          m_data[currTail] = t;
+          return true;
+        }
+      }
+      return false;
+
+    }
+
+    Table* discardOldest() {
+      while (!empty()) {
+        auto currHead = m_head.load(std::memory_order::memory_order_relaxed);
+        auto newHead = (currHead + 1) % m_size;
+        if (m_head.compare_exchange_strong(currHead, newHead)) {
+          --m_totalTables;
+          return m_data[currHead];
+        }
+      }
+      return nullptr;
+    }
+
+    Table* peekOldest() {
+      auto currHead = m_head.load(std::memory_order::memory_order_relaxed);
+      return m_data[currHead];
+    }
+
+    ValueType getValueHistorically(KeyType k) {
+      auto v = ValueTraitsType::defaultValue();
+      for (auto i = m_head.load(std::memory_order::memory_order_seq_cst); i < m_tail.load(); ++i) {
+        auto t = m_data[i];
+        auto cell = t->findFirstCellFor(k);
+        if (cell != nullptr) {
+          v = cell->value.load();
+        }
+      }
+
+      return v;
+    }
+
+    void removeValueHistorically(KeyType k) {
+      for (auto i = m_head.load(std::memory_order::memory_order_seq_cst); i < m_tail.load(); ++i) {
+        auto t = m_data[i];
+        auto cell = t->findFirstCellFor(k);
+        if (cell != nullptr) {
+          cell->key.store(KeyTraitsType::defaultValue(), std::memory_order::memory_order_relaxed);
+          cell->value.store(ValueTraitsType::defaultValue(), std::memory_order::memory_order_relaxed);
+        }
+      }
+    }
+
+    bool startMigrationTransaction() {
+      auto v = false;
+      return m_isMigrating.compare_exchange_strong(v, true);
+    }
+
+    void endTransaction() {
+      m_isMigrating.store(false, std::memory_order::memory_order_relaxed);
+    }
+
+    Table** m_data;
+    int m_size;
+    std::atomic<int> m_totalTables;
+    std::atomic<int> m_head;
+    std::atomic<int> m_tail;
+    std::atomic<bool> m_isMigrating;
+  };
+
+  struct AutoCloseMigration {
+    AutoCloseMigration(OldTablesContainer* oldTables): m_container(oldTables) {}
+    ~AutoCloseMigration() {
+      m_container->endTransaction();
     }
 
   private:
-    Table* m_table;
+    OldTablesContainer* m_container;
   };
 
   double m_maxLoadFactor;
   double m_growthFactor;
 
   std::atomic<Table*> m_activeTable;
-  std::atomic<Table*> m_backgroundTable;
+  OldTablesContainer m_oldTables;
 
   // migration
-  std::atomic<bool> m_isMigrating;
 
-  void migrate() {
-    Table* currentTable = m_activeTable;
+  void activateNewTable() {
+    Table* currentTable = m_activeTable.load();
+    auto newSize = static_cast<int>(currentTable->m_size * m_growthFactor);
 
-    auto baseNumCells = std::max(currentTable->m_size, currentTable->m_heldKeys + currentTable->m_changingThreads);
-    auto newSize = static_cast<int>(baseNumCells * m_growthFactor * m_maxLoadFactor);
+    auto newTable = new Table(newSize, newSize * m_maxLoadFactor);
 
-    printf("+mig from %d to %d\n", currentTable->m_size, newSize);
-
-    auto newTable = new Table(newSize, newSize);
-
-    // make it the active one
-    m_backgroundTable = currentTable;
+    m_oldTables.insert(currentTable);
     m_activeTable = newTable;
+  }
 
-    currentTable->waitForThreadsToLeave();
+  ValueType insertWithoutAllocate(Table* table, KeyType k, ValueType v) {
+    auto cell = table->fillFirstCellFor(k);
+    if (cell == nullptr) {
+      return ValueTraitsType::defaultValue();
+    }
 
-    m_isMigrating = true;
+    cell->value.store(v, std::memory_order::memory_order_release);
+    return v;
+  }
 
-    newTable->importFrom(currentTable);
+  bool migrateFirstElements(Table* fromTable, Table* toTable, int n) {
+    auto migratedElements = 0;
+    for (auto i = 0; i < fromTable->m_size; ++i) {
+      if (migratedElements >= n) return false;
+      if (fromTable->m_data[i].key == KeyTraitsType::defaultValue()) continue;
 
-    m_isMigrating = false;
+      auto v = m_oldTables.getValueHistorically(fromTable->m_data[i].key);
+      if (v == ValueTraitsType::defaultValue()) continue;
 
-    // delete m_backgroundTable;
+      insertWithoutAllocate(toTable, fromTable->m_data[i].key, v);
+      m_oldTables.removeValueHistorically(fromTable->m_data[i].key);
+      migratedElements++;
+    }
 
-    printf("-mig\n");
+    return true;
   }
 
 };
