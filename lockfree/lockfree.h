@@ -43,26 +43,20 @@ public:
   ValueType insert(KeyType k, ValueType v) {
     Table* table = m_activeTable.load();
 
-    auto valueInserted = insertWithoutAllocate(table, k, v);
-    if (valueInserted == ValueTraitsType::defaultValue()) return valueInserted;
+    auto insertionResult = insertWithoutAllocate(table, k, v);
+    switch (insertionResult) {
+      case InsertionResult::value_updated:
+        return v;
+      case InsertionResult::insertion_failed:
+        return ValueTraitsType::defaultValue();
+      case InsertionResult::key_inserted:
+        ++table->m_heldKeys;
+        if (--table->m_freeCells == 0) {
+          activateNewTable();
+        }
 
-    ++table->m_heldKeys;
-    if (--table->m_freeCells == 0) {
-      activateNewTable();
+        return v;
     }
-    else if (!m_oldTables.empty() && m_oldTables.startMigrationTransaction()) {
-      AutoCloseMigration endMigration(&m_oldTables);
-
-      auto oldTable = m_oldTables.peekOldest();
-      if (migrateFirstElements(oldTable, table, 0)) {
-        m_oldTables.discardOldest();
-        delete oldTable;
-      }
-    }
-
-
-
-    return v;
   }
 
   ValueType get(KeyType k) {
@@ -74,8 +68,7 @@ public:
     }
 
     auto v = m_oldTables.getValueHistorically(k);
-    if (ValueTraitsType::defaultValue() != insertWithoutAllocate(activeTable, k, v))
-      m_oldTables.removeValueHistorically(k);
+    if (InsertionResult::insertion_failed != insertWithoutAllocate(activeTable, k, v)) m_oldTables.removeValueHistorically(k);
 
     return v;
   }
@@ -247,6 +240,10 @@ private:
     OldTablesContainer* m_container;
   };
 
+  enum class InsertionResult {
+    value_updated, key_inserted, insertion_failed
+  };
+
   double m_maxLoadFactor;
   double m_growthFactor;
 
@@ -265,14 +262,14 @@ private:
     m_activeTable = newTable;
   }
 
-  ValueType insertWithoutAllocate(Table* table, KeyType k, ValueType v) {
+  InsertionResult insertWithoutAllocate(Table* table, KeyType k, ValueType v) {
     auto cell = table->fillFirstCellFor(k);
     if (cell == nullptr) {
-      return ValueTraitsType::defaultValue();
+      return InsertionResult::insertion_failed;
     }
 
-    cell->value.store(v, std::memory_order::memory_order_release);
-    return v;
+    auto prev = cell->value.exchange(v, std::memory_order::memory_order_release);
+    return prev == ValueTraitsType::defaultValue() ? InsertionResult::key_inserted : InsertionResult::value_updated;
   }
 
   bool migrateFirstElements(Table* fromTable, Table* toTable, int n) {
