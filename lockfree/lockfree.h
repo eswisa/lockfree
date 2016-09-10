@@ -2,9 +2,7 @@
 #define __LOCKFREE_H
 
 #include <memory>
-#include <memory.h>
 #include <atomic>
-#include <limits>
 
 #include "table.h"
 
@@ -53,14 +51,6 @@ public:
     auto v = m_oldTables.getValueHistorically(k);
     if (InsertionResult::insertion_failed != insertWithoutAllocate(activeTable, k, v)) {
       m_oldTables.removeValueHistorically(k);
-
-      // check if the table can (should) be removed
-      auto oldestTable = m_oldTables.peekOldest();
-      // if (oldestTable->m_heldKeys == 0) {
-      //   auto tableToBeDiscarded = m_oldTables.discardOldest();
-        // if ()
-
-      // }
     }
 
     return v;

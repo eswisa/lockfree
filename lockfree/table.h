@@ -30,7 +30,9 @@ struct Element {
 };
 
 template <typename KeyType, typename ValueType, typename KeyTraitsType = key_traits<KeyType>, typename ValueTraitsType = value_traits<ValueType>>
-struct Table {
+class Table {
+
+public:
   Table(int size, int freeCells): m_size(size), m_freeCells(freeCells), m_heldKeys(0){
     m_data = new Element<KeyType, ValueType>[size];
     for (int i = 0; i < size; ++i) {
@@ -78,4 +80,16 @@ struct Table {
   Element<KeyType, ValueType>* m_data;
 };
 
+template <typename KeyType, typename ValueType>
+class DecayingTable {
+
+public:
+  ValueType get(KeyType k);
+  ValueType remove(KeyType k);
+  bool isEmpty();
+
+private:
+  Table<KeyType, ValueType> m_table;
+
+};
 #endif // TABLE_H
