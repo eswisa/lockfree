@@ -6,24 +6,7 @@
 #include <atomic>
 #include <limits>
 
-template <typename T>
-struct key_traits {
-  static T defaultValue() { return T(); }
-  static uint32_t hash (T n) {
-    static_assert(std::is_integral<T>::value, "Key should be integer or a custom key_traits should be used.");
-    n ^= n >> 16;
-    n *= 0x85ebca6b;
-    n ^= n >> 13;
-    n *= 0xc2b2ae35;
-    n ^= n >> 16;
-    return static_cast<uint32_t>(n);
-  }
-};
-
-template <typename T>
-struct value_traits {
-  static T defaultValue() { return T(); }
-};
+#include "table.h"
 
 template <typename Tkey, typename Tvalue, typename Tkey_traits = key_traits<Tvalue>, typename Tvalue_traits = value_traits<Tvalue>>
 class LockFreeMap {
@@ -37,11 +20,11 @@ public:
   ~LockFreeMap() {}
 
   LockFreeMap(int initialSize, double maxLoadFactor = 0.5, double growthFactor = 4.0): m_maxLoadFactor(maxLoadFactor), m_growthFactor(growthFactor) {
-    m_activeTable = new Table(initialSize, initialSize * maxLoadFactor);
+    m_activeTable = new Table<Tkey, Tvalue>(initialSize, initialSize * maxLoadFactor);
   }
 
   ValueType insert(KeyType k, ValueType v) {
-    Table* table = m_activeTable.load();
+    Table<Tkey, Tvalue>* table = m_activeTable.load();
 
     auto insertionResult = insertWithoutAllocate(table, k, v);
     switch (insertionResult) {
@@ -60,7 +43,7 @@ public:
   }
 
   ValueType get(KeyType k) {
-    Table* activeTable = m_activeTable.load();
+    Table<Tkey, Tvalue>* activeTable = m_activeTable.load();
     auto cell = activeTable->findFirstCellFor(k);
 
     if (cell != nullptr) {
@@ -68,13 +51,23 @@ public:
     }
 
     auto v = m_oldTables.getValueHistorically(k);
-    if (InsertionResult::insertion_failed != insertWithoutAllocate(activeTable, k, v)) m_oldTables.removeValueHistorically(k);
+    if (InsertionResult::insertion_failed != insertWithoutAllocate(activeTable, k, v)) {
+      m_oldTables.removeValueHistorically(k);
+
+      // check if the table can (should) be removed
+      auto oldestTable = m_oldTables.peekOldest();
+      // if (oldestTable->m_heldKeys == 0) {
+      //   auto tableToBeDiscarded = m_oldTables.discardOldest();
+        // if ()
+
+      // }
+    }
 
     return v;
   }
 
   ValueType remove(KeyType k) {
-    Table* table = m_activeTable;
+    Table<Tkey, Tvalue>* table = m_activeTable;
 
     auto cell = table->findFirstCellFor(k);
 
@@ -92,62 +85,9 @@ public:
   }
 
 private:
-  struct Element {
-    std::atomic<KeyType> key;
-    std::atomic<ValueType> value;
-  };
-
-  struct Table {
-    Table(int size, int freeCells): m_size(size), m_freeCells(freeCells), m_heldKeys(0){
-      m_data = new Element[size];
-      for (int i = 0; i < size; ++i) {
-        m_data[i].value = ValueTraitsType::defaultValue();
-        m_data[i].key = KeyTraitsType::defaultValue();
-      }
-    }
-
-    ~Table() {
-      delete[] m_data;
-    }
-
-    Element* fillFirstCellFor(KeyType k) {
-      auto totalCells = m_size;
-
-      for (auto idx = KeyTraitsType::hash(k); totalCells > 0; ++idx, --totalCells) {
-        idx %= m_size;
-        auto currCellKey = std::atomic_load_explicit(&m_data[idx].key, std::memory_order::memory_order_relaxed);
-
-        if ((currCellKey == k) ||
-           (currCellKey == KeyTraitsType::defaultValue() && std::atomic_compare_exchange_strong(&m_data[idx].key, &currCellKey, k))) {
-          return &m_data[idx];
-        }
-      }
-      return nullptr;
-    }
-
-    Element* findFirstCellFor(KeyType k) {
-      auto totalCells = m_size;
-
-      for (auto idx = KeyTraitsType::hash(k); totalCells > 0; ++idx, --totalCells) {
-        idx %= m_size;
-        auto currCellKey = std::atomic_load_explicit(&m_data[idx].key, std::memory_order::memory_order_relaxed);
-
-        if (currCellKey == k) {
-          return &m_data[idx];
-        }
-      }
-      return nullptr;
-    }
-
-    int m_size;
-    std::atomic<int> m_freeCells;
-    std::atomic<int> m_heldKeys;
-    Element* m_data;
-  };
-
   struct OldTablesContainer {
     OldTablesContainer(int size = 100) : m_size(size), m_totalTables(0), m_head(0), m_tail(0), m_isMigrating(false) {
-      m_data = new Table*[m_size];
+      m_data = new Table<Tkey, Tvalue>*[m_size];
     }
 
     bool empty() {
@@ -158,7 +98,7 @@ private:
       return m_totalTables == m_size;
     }
 
-    bool insert(Table* t){
+    bool insert(Table<Tkey, Tvalue>* t){
       while (!full()) {
         auto currTail = m_tail.load(std::memory_order::memory_order_relaxed);
         auto newTail = (currTail + 1) % m_size;
@@ -172,7 +112,7 @@ private:
 
     }
 
-    Table* discardOldest() {
+    Table<Tkey, Tvalue>* discardOldest() {
       while (!empty()) {
         auto currHead = m_head.load(std::memory_order::memory_order_relaxed);
         auto newHead = (currHead + 1) % m_size;
@@ -184,7 +124,7 @@ private:
       return nullptr;
     }
 
-    Table* peekOldest() {
+    Table<Tkey, Tvalue>* peekOldest() {
       auto currHead = m_head.load(std::memory_order::memory_order_relaxed);
       return m_data[currHead];
     }
@@ -209,6 +149,7 @@ private:
         if (cell != nullptr) {
           cell->key.store(KeyTraitsType::defaultValue(), std::memory_order::memory_order_relaxed);
           cell->value.store(ValueTraitsType::defaultValue(), std::memory_order::memory_order_relaxed);
+          t->m_heldKeys--;
         }
       }
     }
@@ -222,7 +163,7 @@ private:
       m_isMigrating.store(false, std::memory_order::memory_order_relaxed);
     }
 
-    Table** m_data;
+    Table<Tkey, Tvalue>** m_data;
     int m_size;
     std::atomic<int> m_totalTables;
     std::atomic<int> m_head;
@@ -247,22 +188,22 @@ private:
   double m_maxLoadFactor;
   double m_growthFactor;
 
-  std::atomic<Table*> m_activeTable;
+  std::atomic<Table<Tkey, Tvalue>*> m_activeTable;
   OldTablesContainer m_oldTables;
 
   // migration
 
   void activateNewTable() {
-    Table* currentTable = m_activeTable.load();
+    Table<Tkey, Tvalue>* currentTable = m_activeTable.load();
     auto newSize = static_cast<int>(currentTable->m_size * m_growthFactor);
 
-    auto newTable = new Table(newSize, newSize * m_maxLoadFactor);
+    auto newTable = new Table<Tkey, Tvalue>(newSize, newSize * m_maxLoadFactor);
 
     m_oldTables.insert(currentTable);
     m_activeTable = newTable;
   }
 
-  InsertionResult insertWithoutAllocate(Table* table, KeyType k, ValueType v) {
+  InsertionResult insertWithoutAllocate(Table<Tkey, Tvalue>* table, KeyType k, ValueType v) {
     auto cell = table->fillFirstCellFor(k);
     if (cell == nullptr) {
       return InsertionResult::insertion_failed;
@@ -272,7 +213,7 @@ private:
     return prev == ValueTraitsType::defaultValue() ? InsertionResult::key_inserted : InsertionResult::value_updated;
   }
 
-  bool migrateFirstElements(Table* fromTable, Table* toTable, int n) {
+  bool migrateFirstElements(Table<Tkey, Tvalue>* fromTable, Table<Tkey, Tvalue>* toTable, int n) {
     auto migratedElements = 0;
     for (auto i = 0; i < fromTable->m_size; ++i) {
       if (migratedElements >= n) return false;
