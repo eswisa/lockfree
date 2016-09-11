@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <limits>
+#include <stdexcept>
 
 template <typename T>
 struct key_traits {
@@ -34,6 +35,10 @@ class Table {
 
 public:
   Table(int size, int freeCells): m_size(size), m_freeCells(freeCells), m_heldKeys(0){
+    if (size == 0) throw std::invalid_argument("size argument cannot be 0");
+    if (size < 0) throw std::invalid_argument("size argument cannot be negative");
+    if (size < freeCells) throw std::invalid_argument("size must not be less than freeCells");
+
     m_data = new Element<KeyType, ValueType>[size];
     for (int i = 0; i < size; ++i) {
       m_data[i].value = ValueTraitsType::defaultValue();
