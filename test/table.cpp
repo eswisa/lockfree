@@ -138,7 +138,6 @@ struct custom_key_traits_pointer {
     return *n % 10;
   }
 };
-
 TEST(TableTests, Sanity_for_when_types_are_pointers_hashing_on_address) {
   Table<int*, int*, custom_key_traits_pointer> t(10, 10);
 
@@ -157,4 +156,196 @@ TEST(TableTests, Sanity_for_when_types_are_pointers_hashing_on_address) {
   EXPECT_EQ(usedCell, foundCell);
   ASSERT_EQ(k, foundCell->key.load());
   ASSERT_EQ(nullptr, foundCell->value.load());
+}
+
+TEST(DecayingTableTests, Construct_a_null_table) {
+  EXPECT_ANY_THROW((DecayingTable<int, int>(nullptr)));
+}
+
+TEST(DecayingTableTests, Construct_an_empty_table) {
+  Table<int, int> t(10, 3);
+  DecayingTable<int, int> d(&t);
+  EXPECT_TRUE(d.isEmpty());
+}
+
+TEST(DecayingTableTests, Get_from_an_empty_table){
+  Table<int, int> t(10, 3);
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_EQ(0, d.get(10));
+}
+
+TEST(DecayingTableTests, Get_from_a_singleton_table){
+  Table<int, int> t(10, 3);
+  auto cell = t.fillFirstCellFor(5);
+  cell->value.store(9);
+  t.m_heldKeys++;
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_EQ(9, d.get(5));
+}
+
+TEST(DecayingTableTests, Get_nonexisting){
+  Table<int, int> t(10, 3);
+  auto cell = t.fillFirstCellFor(5);
+  cell->value.store(9);
+  t.m_heldKeys++;
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_EQ(0, d.get(3));
+}
+
+TEST(DecayingTableTests, Get_one_delete_it_and_get_again){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(2);
+  cell->value.store(12);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(3);
+  cell->value.store(13);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_EQ(12, d.get(2));
+  EXPECT_EQ(12, d.remove(2));
+  EXPECT_EQ(0, d.get(2));
+}
+
+TEST(DecayingTableTests, Get_one_delete_another_and_get) {
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(2);
+  cell->value.store(12);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(3);
+  cell->value.store(13);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_EQ(12, d.get(2));
+  EXPECT_EQ(11, d.remove(1));
+  EXPECT_EQ(12, d.get(2));
+}
+
+TEST(DecayingTableTests, Delete_nonexisting){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(2);
+  cell->value.store(12);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(3);
+  cell->value.store(13);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_EQ(0, d.remove(4));
+}
+
+TEST(DecayingTableTests, Delete_the_same_element_twice){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(2);
+  cell->value.store(12);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(3);
+  cell->value.store(13);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+  EXPECT_EQ(11, d.remove(1));
+  EXPECT_EQ(0, d.remove(1));
+}
+
+TEST(DecayingTableTests, Delete_two_elements){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(2);
+  cell->value.store(12);
+  t.m_heldKeys++;
+  cell = t.fillFirstCellFor(3);
+  cell->value.store(13);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+  EXPECT_EQ(11, d.remove(1));
+  EXPECT_EQ(12, d.remove(2));
+}
+
+TEST(DecayingTableTests, Delete_last_element_and_get_it){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+  EXPECT_EQ(11, d.remove(1));
+  EXPECT_EQ(0, d.get(1));
+  EXPECT_TRUE(d.isEmpty());
+}
+
+TEST(DecayingTableTests, Delete_last_element_twice){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+  EXPECT_EQ(11, d.remove(1));
+  EXPECT_EQ(0, d.remove(1));
+  EXPECT_TRUE(d.isEmpty());
+}
+
+TEST(DecayingTableTests, IsEmpty_on_constructed_empty){
+  Table<int, int> t(10, 10);
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_TRUE(d.isEmpty());
+}
+
+TEST(DecayingTableTests, IsEmpty_on_table_with_elements){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+
+  EXPECT_FALSE(d.isEmpty());
+}
+
+TEST(DecayingTableTests, IsEmpty_on_table_that_got_emptied){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+  EXPECT_EQ(11, d.remove(1));
+
+  EXPECT_TRUE(d.isEmpty());
+}
+
+TEST(DecayingTableTests, IsEmpty_on_table_that_got_emptied_and_one_more){
+  Table<int, int> t(10, 10);
+  auto cell = t.fillFirstCellFor(1);
+  cell->value.store(11);
+  t.m_heldKeys++;
+
+  DecayingTable<int, int> d(&t);
+  EXPECT_EQ(11, d.remove(1));
+  EXPECT_EQ(0, d.remove(1));
+  EXPECT_TRUE(d.isEmpty());
 }

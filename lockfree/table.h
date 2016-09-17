@@ -85,16 +85,61 @@ public:
   Element<KeyType, ValueType>* m_data;
 };
 
-template <typename KeyType, typename ValueType>
+template <typename KeyType, typename ValueType, typename ValueTraitsType = value_traits<ValueType>>
 class DecayingTable {
 
 public:
-  ValueType get(KeyType k);
-  ValueType remove(KeyType k);
-  bool isEmpty();
+  DecayingTable(Table<KeyType, ValueType>* table) {
+    if (table == nullptr) throw std::invalid_argument("table argument cannot be null");
+
+    m_table = table;
+    m_active.store(m_table->m_heldKeys > 0, std::memory_order::memory_order_release);
+  }
+
+  bool exists(KeyType k) {
+    if (isEmpty()) return false;
+
+    return nullptr == m_table->findFirstCellFor(k);
+  }
+
+  ValueType get(KeyType k) {
+    if (isEmpty()) return ValueTraitsType::defaultValue();
+
+    auto cell = m_table->findFirstCellFor(k);
+    if (cell == nullptr)  return ValueTraitsType::defaultValue();
+
+    return cell->value.load(std::memory_order::memory_order_relaxed);
+  }
+
+  ValueType remove(KeyType k) {
+    if (isEmpty()) return ValueTraitsType::defaultValue();
+
+    auto cell = m_table->findFirstCellFor(k);
+    if (cell == nullptr)  return ValueTraitsType::defaultValue();
+
+    auto oldValue = cell->value.load();
+    cell->value.store(ValueTraitsType::defaultValue(), std::memory_order::memory_order_relaxed);
+    m_table->m_heldKeys--;
+    return oldValue;
+  }
+
+  inline bool isEmpty() {
+    auto isActive = m_active.load(std::memory_order::memory_order_relaxed);
+    if (isActive) {
+      auto isActiveNewValue = m_table->m_heldKeys.load(std::memory_order::memory_order_relaxed) > 0;
+      m_active.store(isActiveNewValue, std::memory_order::memory_order_release);
+
+      // we can safely delete m_table now
+
+      return !isActiveNewValue;
+    }
+    return !isActive;
+  }
+
 
 private:
-  Table<KeyType, ValueType> m_table;
+  Table<KeyType, ValueType>* m_table;
+  std::atomic<bool> m_active;
 
 };
 #endif // TABLE_H
